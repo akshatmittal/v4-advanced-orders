@@ -5,5 +5,5 @@ url = https://github.com/foundry-rs/forge-std
 	path = lib/v4-periphery
 	url = https://github.com/Uniswap/v4-periphery
 [submodule "lib/v4-core"]
-path = lib/v4-core
-url = https://github.com/uniswap/v4-core
+	path = lib/v4-core
+	url = https://github.com/Uniswap/v4-core
