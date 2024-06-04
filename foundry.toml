@@ -9,3 +9,6 @@ evm_version = "cancun"  # hard fork that enabled EIP-1153
 optimizer_runs = 800
 via_ir = false
 ffi = true
+
+[fmt]
+bracket_spacing = true
