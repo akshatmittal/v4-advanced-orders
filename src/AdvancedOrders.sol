@@ -11,6 +11,7 @@ import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {ERC1155} from "solmate/tokens/ERC1155.sol";
 import {CurrencyLibrary, Currency} from "v4-core/types/Currency.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
+import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
 
 /**
@@ -22,6 +23,7 @@ contract AdvancedOrders is BaseHook, ERC1155 {
     using PoolIdLibrary for PoolKey;
     using FixedPointMathLib for uint256;
     using CurrencyLibrary for Currency;
+    using StateLibrary for IPoolManager;
 
     enum OrderType { STOP_LOSS, BUY_STOP, BUY_LIMIT, TAKE_PROFIT }
     enum OrderStatus { OPEN, EXECUTED, CANCELED }
@@ -126,8 +128,8 @@ contract AdvancedOrders is BaseHook, ERC1155 {
         PoolKey calldata key,
         IPoolManager.SwapParams calldata params,
         BalanceDelta,
-        bytes calldata data
-    ) external override returns (bytes4, int128) {
+        bytes calldata
+    ) external view override returns (bytes4, int128) {
         int24 prevTick = tickLowerLasts[key.toId()];
         int24 tick = getTick(key.toId());
         int24 currentTick = getTickLower(tick, key.tickSpacing);
@@ -157,17 +159,17 @@ contract AdvancedOrders is BaseHook, ERC1155 {
         return (AdvancedOrders.afterSwap.selector, tick); 
     }
 
-    function performSwap(PoolKey memory key, IPoolManager.SwapParams memory params, address receiver)
-    internal
-    returns (BalanceDelta delta)
-    {
-        delta = abi.decode(poolManager.lock(abi.encodeCall(this.handleSwap, (key, params, receiver))), (BalanceDelta));
+    // function performSwap(PoolKey memory key, IPoolManager.SwapParams memory params, address receiver)
+    // internal
+    // returns (BalanceDelta delta)
+    // {
+    //     delta = abi.decode(poolManager.lock(abi.encodeCall(this.handleSwap, (key, params, receiver))), (BalanceDelta));
 
-        uint256 ethBalance = address(this).balance;
-        if (ethBalance > 0) {
-            CurrencyLibrary.NATIVE.transfer(msg.sender, ethBalance);
-        }
-    }
+    //     uint256 ethBalance = address(this).balance;
+    //     if (ethBalance > 0) {
+    //         CurrencyLibrary.NATIVE.transfer(msg.sender, ethBalance);
+    //     }
+    // }
 
     function getTick(PoolId poolId) private view returns (int24 tick) {
         (, tick,,) = poolManager.getSlot0(poolId);
