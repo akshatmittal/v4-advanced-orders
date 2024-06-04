@@ -16,6 +16,8 @@ import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
  */
 contract AdvancedOrders is BaseHook, ERC1155 {
     using FixedPointMathLib for uint256;
+    using PoolId for IPoolManager.PoolKey;
+    using CurrencyLibrary for Currency;
 
     enum OrderType { STOP_LOSS, BUY_STOP, BUY_LIMIT, TAKE_PROFIT }
     enum OrderStatus { OPEN, EXECUTED, CANCELED }
@@ -77,15 +79,25 @@ contract AdvancedOrders is BaseHook, ERC1155 {
         require(amountIn > 0, "Amount must be greater than 0");
         require(triggerPrice > 0, "Trigger price must be greater than 0");
 
-        IERC20(pool.token0()).safeTransferFrom(msg.sender, address(this), amountIn);
-
         orderId = keccak256(abi.encodePacked(orderCount, msg.sender, block.timestamp));
         bool zeroForOne = OrderType.BUY_STOP ||  OrderType.STOP_LOSS;
         orders[orderId] = Order(msg.sender, orderType, amountIn, triggerPrice, false, zeroForOne);
-        int24 tick = getTick(poolId);
+        int24 tick = getTickLower(tickLower, poolKey.tickSpacing);
         orderPositions[tick][zeroForOne][orderId] = orders[orderId];
         orderCount++;
 
+        // Mint receipt token
+        uint256 tokenId = getTokenId(poolKey, tick, zeroForOne);
+        if (!tokenIdExists[tokenId]) {
+            tokenIdExists[tokenId] = true;
+            tokenIdIndex[tokenId] = TokenIdData({poolKey: poolKey, tickLower: tick, zeroForOne: zeroForOne});
+        }
+        _mint(msg.sender, tokenId, amountIn, "");
+        totalSupply[tokenId] += amountIn;
+
+        // Transfer token0 to this contract
+        address token = zeroForOne ? Currency.unwrap(poolKey.currency0) : Currency.unwrap(poolKey.currency1);
+        IERC20(token).transferFrom(msg.sender, address(this), amountIn);
         emit OrderPlaced(orderId, msg.sender, orderType, amountIn, triggerPrice);
     }
 
