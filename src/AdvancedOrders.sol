@@ -8,6 +8,10 @@ import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 import {BaseHook} from "v4-periphery/BaseHook.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
+import {ERC1155} from "solmate/tokens/ERC1155.sol";
+import {CurrencyLibrary, Currency} from "v4-core/types/Currency.sol";
+import {Hooks} from "v4-core/libraries/Hooks.sol";
+import {PoolKey} from "v4-core/types/PoolKey.sol";
 
 /**
  * @title AdvancedOrders
@@ -15,12 +19,13 @@ import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
  *      It also supports execution aggregation via EigenLayer AVS.
  */
 contract AdvancedOrders is BaseHook, ERC1155 {
+    using PoolIdLibrary for PoolKey;
     using FixedPointMathLib for uint256;
-    using PoolId for IPoolManager.PoolKey;
     using CurrencyLibrary for Currency;
 
     enum OrderType { STOP_LOSS, BUY_STOP, BUY_LIMIT, TAKE_PROFIT }
     enum OrderStatus { OPEN, EXECUTED, CANCELED }
+    
     struct Order {
         address user;
         OrderType orderType;
@@ -31,27 +36,40 @@ contract AdvancedOrders is BaseHook, ERC1155 {
     }
 
     IPoolManager public pool;
-    EigenLayerAVS public avs; // TODO: integrate avs
+    // EigenLayerAVS public avs; // TODO: integrate avs
     uint256 public orderCount;
     mapping(bytes32 => Order) public orders;
-    mapping(int24 tick => mapping(bool zeroForOne => orders)) public orderPositions;
+    mapping(int24 tick => mapping(bool zeroForOne => Order[])) public orderPositions;
     mapping(PoolId => int24) public tickLowerLasts;
-
-    // constants for sqrtPriceLimitX96 which allow for unlimited impact
-    uint160 public constant MIN_PRICE_LIMIT = TickMath.MIN_SQRT_RATIO + 1;
-    uint160 public constant MAX_PRICE_LIMIT = TickMath.MAX_SQRT_RATIO - 1;
 
     event OrderPlaced(bytes32 indexed orderId, address indexed user, OrderType orderType, uint256 amountIn, uint256 triggerPrice);
     event OrderExecuted(bytes32 indexed orderId, address indexed user, OrderType orderType, uint256 amountIn, uint256 triggerPrice);
 
-    constructor(IPoolManager _manager) BaseHook(_manager) {}
+    // -- 1155 state -- //
+    mapping(uint256 tokenId => TokenIdData) public tokenIdIndex;
+    mapping(uint256 tokenId => bool) public tokenIdExists;
+    mapping(uint256 tokenId => uint256 claimable) public claimable;
+    mapping(uint256 tokenId => uint256 supply) public totalSupply;
 
-    function getHooksCalls() public pure override returns (Hooks.Calls memory) {
-        return Hooks.Calls({
+    struct TokenIdData {
+        PoolKey poolKey;
+        int24 tickLower;
+        bool zeroForOne;
+    }
+
+    constructor(
+        IPoolManager _manager,
+        string memory _uri
+    ) BaseHook(_manager) ERC1155(_uri) {}
+
+    function getHooksCalls() public pure returns (Hooks.Permissions memory) {
+        return Hooks.Permissions({
             beforeInitialize: false,
             afterInitialize: true,
-            beforeModifyPosition: false,
-            afterModifyPosition: false,
+            beforeAddLiquidity: false,
+            afterAddLiquidity: false,
+            beforeRemoveLiquidity: false,
+            afterRemoveLiquidity: false,
             beforeSwap: false,
             afterSwap: true,
             beforeDonate: false,
@@ -59,9 +77,8 @@ contract AdvancedOrders is BaseHook, ERC1155 {
         });
     }
 
-    function afterInitialize(address, IPoolManager.PoolKey calldata key, uint160, int24 tick)
+    function afterInitialize(address, PoolKey calldata key, uint160, int24 tick)
         external
-        override
         poolManagerOnly
         returns (bytes4)
     {
@@ -75,7 +92,7 @@ contract AdvancedOrders is BaseHook, ERC1155 {
      * @param amountIn The amount of tokens involved in the order.
      * @param triggerPrice The price at which the order should be triggered.
      */
-    function placeOrder(OrderType orderType, uint256 amountIn, uint256 triggerPrice, PoolId poolId) external returns (bytes32 orderId) {
+    function placeOrder(OrderType orderType, uint256 amountIn, uint256 triggerPrice, PoolKey calldata poolKey, int24 tickLower) external returns (bytes32 orderId) {
         require(amountIn > 0, "Amount must be greater than 0");
         require(triggerPrice > 0, "Trigger price must be greater than 0");
 
@@ -103,7 +120,7 @@ contract AdvancedOrders is BaseHook, ERC1155 {
 
     function afterSwap(
         address,
-        IPoolManager.PoolKey calldata key,
+        PoolKey calldata key,
         IPoolManager.SwapParams calldata params,
         BalanceDelta
     ) external override returns (bytes4) {
@@ -112,13 +129,13 @@ contract AdvancedOrders is BaseHook, ERC1155 {
         int24 currentTick = getTickLower(tick, key.tickSpacing);
         tick = prevTick;
 
-        Order[] memory orders;
+        Order[] memory validOrders;
         // fill orders in the opposite direction of the swap
         bool orderZeroForOne = !params.zeroForOne;
 
         if (prevTick < currentTick) {
             for (; tick < currentTick;) {
-                orders = orderPositions[key.toId()][tick][orderZeroForOne];
+                validOrders = orderPositions[key.toId()][tick][orderZeroForOne];
                 // TODO: Implement avs for order processing
                 unchecked {
                     tick += key.tickSpacing;
@@ -126,7 +143,7 @@ contract AdvancedOrders is BaseHook, ERC1155 {
             }
         } else {
             for (; currentTick < tick;) {
-                orders = orderPositions[key.toId()][tick][orderZeroForOne];
+                validOrders = orderPositions[key.toId()][tick][orderZeroForOne];
                 // TODO: Implement avs for order processing
                 unchecked {
                     tick -= key.tickSpacing;
@@ -136,12 +153,7 @@ contract AdvancedOrders is BaseHook, ERC1155 {
         return AdvancedOrders.afterSwap.selector;
     }
 
-
-    /**
-     * @dev Placeholder function to perform token swaps 
-     * @param order The order to execute.
-     */
-    function performSwap(IPoolManager.PoolKey memory key, IPoolManager.SwapParams memory params, address receiver)
+    function performSwap(PoolKey memory key, IPoolManager.SwapParams memory params, address receiver)
     internal
     returns (BalanceDelta delta)
     {
@@ -162,7 +174,7 @@ contract AdvancedOrders is BaseHook, ERC1155 {
         return "https://uniswap-advanced-orders.com/";
     }
 
-    function getTokenId(IPoolManager.PoolKey calldata poolKey, int24 tickLower, bool zeroForOne)
+    function getTokenId(PoolKey calldata poolKey, int24 tickLower, bool zeroForOne)
         public
         pure
         returns (uint256)
