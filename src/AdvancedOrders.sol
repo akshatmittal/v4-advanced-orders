@@ -129,7 +129,7 @@ contract AdvancedOrders is BaseHook, ERC1155 {
         bytes calldata data
     ) external override returns (bytes4, int128) {
         int24 prevTick = tickLowerLasts[key.toId()];
-        (, int24 tick,) = poolManager.getSlot0(key.toId());
+        int24 tick = getTick(key.toId());
         int24 currentTick = getTickLower(tick, key.tickSpacing);
         tick = prevTick;
 
@@ -139,7 +139,7 @@ contract AdvancedOrders is BaseHook, ERC1155 {
 
         if (prevTick < currentTick) {
             for (; tick < currentTick;) {
-                validOrders = orderPositions[key.toId()][tick][orderZeroForOne];
+                validOrders = orderPositions[tick][orderZeroForOne];
                 // TODO: Implement avs for order processing
                 unchecked {
                     tick += key.tickSpacing;
@@ -147,7 +147,7 @@ contract AdvancedOrders is BaseHook, ERC1155 {
             }
         } else {
             for (; currentTick < tick;) {
-                validOrders = orderPositions[key.toId()][tick][orderZeroForOne];
+                validOrders = orderPositions[tick][orderZeroForOne];
                 // TODO: Implement avs for order processing
                 unchecked {
                     tick -= key.tickSpacing;
