@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.25;
 
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
@@ -35,7 +35,7 @@ contract AdvancedOrders is BaseHook, ERC1155 {
         bool zeroForOne;
     }
 
-    IPoolManager public pool;
+    // IPoolManager public pool;
     // EigenLayerAVS public avs; // TODO: integrate avs
     uint256 public orderCount;
     mapping(bytes32 => Order) public orders;
@@ -58,11 +58,10 @@ contract AdvancedOrders is BaseHook, ERC1155 {
     }
 
     constructor(
-        IPoolManager _manager,
-        string memory _uri
-    ) BaseHook(_manager) ERC1155(_uri) {}
+        IPoolManager _manager
+    ) BaseHook(_manager) ERC1155() {}
 
-    function getHooksCalls() public pure returns (Hooks.Permissions memory) {
+    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
             beforeInitialize: false,
             afterInitialize: true,
@@ -73,7 +72,11 @@ contract AdvancedOrders is BaseHook, ERC1155 {
             beforeSwap: false,
             afterSwap: true,
             beforeDonate: false,
-            afterDonate: false
+            afterDonate: false,
+            beforeSwapReturnDelta: false,
+            afterSwapReturnDelta: false,
+            afterAddLiquidityReturnDelta: false,
+            afterRemoveLiquidityReturnDelta: false
         });
     }
 
@@ -97,10 +100,10 @@ contract AdvancedOrders is BaseHook, ERC1155 {
         require(triggerPrice > 0, "Trigger price must be greater than 0");
 
         orderId = keccak256(abi.encodePacked(orderCount, msg.sender, block.timestamp));
-        bool zeroForOne = OrderType.BUY_STOP ||  OrderType.STOP_LOSS;
+        bool zeroForOne = (orderType == OrderType.BUY_STOP) || (orderType == OrderType.STOP_LOSS);
         orders[orderId] = Order(msg.sender, orderType, amountIn, triggerPrice, false, zeroForOne);
         int24 tick = getTickLower(tickLower, poolKey.tickSpacing);
-        orderPositions[tick][zeroForOne][orderId] = orders[orderId];
+        orderPositions[tick][zeroForOne].push(orders[orderId]);
         orderCount++;
 
         // Mint receipt token
@@ -122,8 +125,9 @@ contract AdvancedOrders is BaseHook, ERC1155 {
         address,
         PoolKey calldata key,
         IPoolManager.SwapParams calldata params,
-        BalanceDelta
-    ) external override returns (bytes4) {
+        BalanceDelta,
+        bytes calldata data
+    ) external override returns (bytes4, int128) {
         int24 prevTick = tickLowerLasts[key.toId()];
         (, int24 tick,) = poolManager.getSlot0(key.toId());
         int24 currentTick = getTickLower(tick, key.tickSpacing);
@@ -150,7 +154,7 @@ contract AdvancedOrders is BaseHook, ERC1155 {
                 }
             }
         }
-        return AdvancedOrders.afterSwap.selector;
+        return (AdvancedOrders.afterSwap.selector, tick); 
     }
 
     function performSwap(PoolKey memory key, IPoolManager.SwapParams memory params, address receiver)
@@ -201,7 +205,7 @@ contract AdvancedOrders is BaseHook, ERC1155 {
     // ---------- //
 
     // -- Util functions -- //
-    function setTickLowerLast(bytes32 poolId, int24 tickLower) private {
+    function setTickLowerLast(PoolId poolId, int24 tickLower) private {
         tickLowerLasts[poolId] = tickLower;
     }
 
