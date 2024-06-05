@@ -106,7 +106,15 @@ contract AdvancedOrders is BaseHook {
 
         orderId = keccak256(abi.encodePacked(orderCount, msg.sender, block.timestamp));
         bool zeroForOne = (orderType == OrderType.BUY_STOP) || (orderType == OrderType.STOP_LOSS);
-        orders[orderId] = Order(msg.sender, orderType, amountIn, _triggerTick, OrderStatus.OPEN, zeroForOne);
+        orders[orderId] = Order({ 
+            user: msg.sender, 
+            orderType: orderType, 
+            amountIn: amountIn, 
+            triggerTick: 
+            _triggerTick, 
+            status: OrderStatus.OPEN, 
+            zeroForOne: zeroForOne 
+        });
         int24 tick = getTickLower(tickLower, _poolKey.tickSpacing);
         orderPositions[tick][zeroForOne].push(orders[orderId]);
         userOrders[msg.sender].push(orders[orderId]);
@@ -116,6 +124,10 @@ contract AdvancedOrders is BaseHook {
         address token = zeroForOne ? Currency.unwrap(_poolKey.currency0) : Currency.unwrap(_poolKey.currency1);
         IERC20(token).transferFrom(msg.sender, address(this), amountIn);
         emit OrderPlaced(orderId, msg.sender, orderType, amountIn, _triggerTick);
+    }
+
+    function getOrder(bytes32 orderId) external view returns (Order memory) {
+        return orders[orderId];
     }
 
     function cancelOrder(bytes32 orderId) external {

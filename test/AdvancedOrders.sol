@@ -75,7 +75,7 @@ contract AdvancedOrdersTest is Test, Deployers, GasSnapshot {
         bytes32 orderId = hook.placeOrder(orderType, amount, tick, poolKey, tick);
         assertEq(token0.balanceOf(address(this)), balanceBefore - amount);
 
-        AdvancedOrders.Order memory order = hook.orders(orderId);
+        AdvancedOrders.Order memory order = hook.getOrder(orderId);
         assertEq(order.user, address(this));
         assertEq(order.amountIn, amount);
         assertEq(order.triggerTick, tick);
@@ -91,7 +91,7 @@ contract AdvancedOrdersTest is Test, Deployers, GasSnapshot {
         bytes32 orderId = hook.placeOrder(orderType, amount, tick, poolKey, tick);
         hook.cancelOrder(orderId);
 
-        AdvancedOrders.Order memory order = hook.orders(orderId);
+        AdvancedOrders.Order memory order = hook.getOrder(orderId);
         assertEq(uint(order.status), uint(AdvancedOrders.OrderStatus.CANCELED));
         assertEq(token0.balanceOf(address(this)), amount);
     }
@@ -116,7 +116,7 @@ contract AdvancedOrdersTest is Test, Deployers, GasSnapshot {
         swapRouter.swap(poolKey, params, testSettings, ZERO_BYTES);
 
         // Check if the order was executed
-        AdvancedOrders.Order memory order = hook.orders(orderId);
+        AdvancedOrders.Order memory order = hook.getOrder(orderId);
         assertEq(uint(order.status), uint(AdvancedOrders.OrderStatus.EXECUTED));
     }
 }
