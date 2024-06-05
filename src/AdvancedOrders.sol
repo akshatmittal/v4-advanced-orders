@@ -84,9 +84,10 @@ contract AdvancedOrders is BaseHook {
         });
     }
 
-    function afterInitialize(address, PoolKey calldata key, uint160, int24 tick)
+    function afterInitialize(address, PoolKey calldata key, uint160, int24 tick, bytes calldata)
         external
         poolManagerOnly
+        override
         returns (bytes4)
     {
         poolKey = key;

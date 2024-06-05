@@ -19,6 +19,7 @@ import { PoolKey } from "v4-core/types/PoolKey.sol";
 import {PoolModifyLiquidityTest} from "v4-core/test/PoolModifyLiquidityTest.sol";
 import {Deployers} from "v4-core-tests/utils/Deployers.sol";
 import { Hooks } from "v4-core/libraries/Hooks.sol";
+import {HookMiner} from "./utils/HookMiner.sol";
 
 contract AdvancedOrdersTest is Test, Deployers, GasSnapshot {
     using PoolIdLibrary for PoolKey;
@@ -46,12 +47,20 @@ contract AdvancedOrdersTest is Test, Deployers, GasSnapshot {
             token1 = TestERC20(Currency.unwrap(_tokenB));             
         }
 
-        hook = new AdvancedOrders(manager);
+        // Deploy the hook to an address with the correct flags
+        uint160 flags = uint160(
+            Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_SWAP_FLAG 
+        );
+        (, bytes32 salt) = HookMiner.find(
+            address(this),
+            flags,
+            type(AdvancedOrders).creationCode,
+            abi.encode(manager)
+        );
 
-        // Create the pool
-        poolKey = PoolKey(Currency.wrap(address(token0)), Currency.wrap(address(token1)), 3000, 60, IHooks(hook));
-        manager.initialize(poolKey, SQRT_PRICE_1_1, ZERO_BYTES);
+        hook = new AdvancedOrders{salt: salt}(manager);
 
+        // Create the pool and add liquidity
         (poolKey, poolId) = initPoolAndAddLiquidity(
             _tokenA, 
             _tokenB, 
