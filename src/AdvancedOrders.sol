@@ -37,6 +37,7 @@ contract AdvancedOrders is BaseHook {
     }
 
     struct Order {
+        bytes32 id;
         address user;
         OrderType orderType;
         uint256 amountIn;
@@ -62,6 +63,8 @@ contract AdvancedOrders is BaseHook {
     );
     event OrderCanceled(
         bytes32 indexed orderId, address indexed user, OrderType orderType);
+
+    event OrdersProcessed(bytes32[] orderIds);
 
     constructor(IPoolManager _manager) BaseHook(_manager) { }
 
@@ -108,6 +111,7 @@ contract AdvancedOrders is BaseHook {
         orderId = keccak256(abi.encodePacked(orderCount, msg.sender, block.timestamp));
         bool zeroForOne = (orderType == OrderType.BUY_STOP) || (orderType == OrderType.STOP_LOSS);
         orders[orderId] = Order({ 
+            id: orderId,
             user: msg.sender, 
             orderType: orderType, 
             amountIn: amountIn, 
@@ -152,7 +156,7 @@ contract AdvancedOrders is BaseHook {
         IPoolManager.SwapParams calldata params,
         BalanceDelta,
         bytes calldata
-    ) external view override returns (bytes4, int128) {
+    ) external override returns (bytes4, int128) {
         int24 prevTick = tickLowerLasts[key.toId()];
         int24 tick = getTick(key.toId());
         int24 currentTick = getTickLower(tick, key.tickSpacing);
@@ -165,7 +169,14 @@ contract AdvancedOrders is BaseHook {
         if (prevTick < currentTick) {
             for (; tick < currentTick;) {
                 validOrders = orderPositions[tick][orderZeroForOne];
-                // TODO: Implement avs for order processing
+                
+                bytes32[] memory orderIds = new bytes32[](validOrders.length);
+                uint256 index = 0;
+                for (uint256 i = 0; i < validOrders.length; i++) {
+                    orderIds[index] = validOrders[i].id;
+                    index++;
+                }
+                emit OrdersProcessed(orderIds);
                 unchecked {
                     tick += key.tickSpacing;
                 }
@@ -173,7 +184,13 @@ contract AdvancedOrders is BaseHook {
         } else {
             for (; currentTick < tick;) {
                 validOrders = orderPositions[tick][orderZeroForOne];
-                // TODO: Implement avs for order processing
+                bytes32[] memory orderIds = new bytes32[](validOrders.length);
+                uint256 index = 0;
+                for (uint256 i = 0; i < validOrders.length; i++) {
+                    orderIds[index] = validOrders[i].id;
+                    index++;
+                }
+                emit OrdersProcessed(orderIds);
                 unchecked {
                     tick -= key.tickSpacing;
                 }
@@ -184,28 +201,24 @@ contract AdvancedOrders is BaseHook {
 
     function settleOrder(bytes32 orderId, bytes calldata _extraData) external { // TODO: add modifier
         Order storage order = orders[orderId];
+        int24 currentTick = getTick(poolKey.toId());
 
-        // TODO: Add check to see if the order can be settled based on current tick and order type
+        if(shouldExecuteOrder(order, currentTick)) {
+            address tokenIn = order.zeroForOne ? Currency.unwrap(poolKey.currency1) : Currency.unwrap(poolKey.currency0);
+            address tokenOut = order.zeroForOne ? Currency.unwrap(poolKey.currency0) : Currency.unwrap(poolKey.currency1);
+            IERC20(tokenIn).transfer(msg.sender, order.amountIn);
 
-        address tokenIn = order.zeroForOne ? Currency.unwrap(poolKey.currency1) : Currency.unwrap(poolKey.currency0);
-        address tokenOut = order.zeroForOne ? Currency.unwrap(poolKey.currency0) : Currency.unwrap(poolKey.currency1);
-        IERC20(tokenIn).transfer(msg.sender, order.amountIn);
+            (bool success,) = msg.sender.call(
+                abi.encodeWithSignature("settleCallback(address,address,bytes)", tokenIn, tokenOut, _extraData)
+            );
+            require(success, "Settle callback failed");
+            // TODO: Validate fullfilment? (checkOrder fn based on the tick)
 
-        (bool success,) = msg.sender.call(
-            abi.encodeWithSignature("settleCallback(address,address,bytes)", tokenIn, tokenOut, _extraData)
-        );
-        require(success, "Settle callback failed");
-        // TODO: Validate fullfilment? (checkOrder fn based on the tick)
-
-        order.status = OrderStatus.EXECUTED;
-        IERC20(tokenOut).transfer(order.user, IERC20(tokenOut).balanceOf(address(this)));
+            order.status = OrderStatus.EXECUTED;
+            IERC20(tokenOut).transfer(order.user, IERC20(tokenOut).balanceOf(address(this)));
+        }
     }
 
-    /**
-     * @dev Checks if an order should be executed based on the current price.
-     * @param order The order to check.
-     * @return True if the order should be executed, false otherwise.
-     */
      function shouldExecuteOrder(Order storage order, int24 currentTick) internal view returns (bool) {
         if (order.orderType == OrderType.STOP_LOSS && currentTick <= order.triggerTick) {
             return true;

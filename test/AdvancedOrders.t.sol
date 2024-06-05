@@ -44,7 +44,7 @@ contract AdvancedOrdersTest is Test, Deployers, GasSnapshot {
             token1 = TestERC20(Currency.unwrap(_tokenB));
         } else {
             token0 = TestERC20(Currency.unwrap(_tokenB));             
-            token1 = TestERC20(Currency.unwrap(_tokenB));             
+            token1 = TestERC20(Currency.unwrap(_tokenA));             
         }
 
         // Deploy the hook to an address with the correct flags
@@ -104,7 +104,6 @@ contract AdvancedOrdersTest is Test, Deployers, GasSnapshot {
 
         AdvancedOrders.Order memory order = hook.getOrder(orderId);
         assertEq(uint(order.status), uint(AdvancedOrders.OrderStatus.CANCELED));
-        // assertEq(token0.balanceOf(address(this)), amount);
     }
 
     function test_afterSwap() public {
