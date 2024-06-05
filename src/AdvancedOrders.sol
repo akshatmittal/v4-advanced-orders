@@ -8,7 +8,6 @@ import { TickMath } from "v4-core/libraries/TickMath.sol";
 import { BalanceDelta } from "v4-core/types/BalanceDelta.sol";
 import { BaseHook } from "v4-periphery/BaseHook.sol";
 import { PoolId, PoolIdLibrary } from "v4-core/types/PoolId.sol";
-import { ERC1155 } from "solmate/tokens/ERC1155.sol";
 import { CurrencyLibrary, Currency } from "v4-core/types/Currency.sol";
 import { Hooks } from "v4-core/libraries/Hooks.sol";
 import { StateLibrary } from "v4-core/libraries/StateLibrary.sol";
@@ -19,7 +18,7 @@ import { PoolKey } from "v4-core/types/PoolKey.sol";
  * @dev A Uniswap V4 hook contract for advanced order types: stop loss, buy stop, buy limit, and take profit.
  *      It also supports execution aggregation via EigenLayer AVS.
  */
-contract AdvancedOrders is BaseHook, ERC1155 {
+contract AdvancedOrders is BaseHook {
     using PoolIdLibrary for PoolKey;
     using FixedPointMathLib for uint256;
     using CurrencyLibrary for Currency;
@@ -53,6 +52,7 @@ contract AdvancedOrders is BaseHook, ERC1155 {
     mapping(bytes32 => Order) public orders;
     mapping(int24 tick => mapping(bool zeroForOne => Order[])) public orderPositions;
     mapping(PoolId => int24) public tickLowerLasts;
+    mapping(address userAddress => Order[]) public userOrders;
 
     event OrderPlaced(
         bytes32 indexed orderId, address indexed user, OrderType orderType, uint256 amountIn, int24 triggerPrice
@@ -60,20 +60,10 @@ contract AdvancedOrders is BaseHook, ERC1155 {
     event OrderExecuted(
         bytes32 indexed orderId, address indexed user, OrderType orderType, uint256 amountIn, int24 triggerPrice
     );
+    event OrderCanceled(
+        bytes32 indexed orderId, address indexed user, OrderType orderType);
 
-    // -- 1155 state -- //
-    mapping(uint256 tokenId => TokenIdData) public tokenIdIndex;
-    mapping(uint256 tokenId => bool) public tokenIdExists;
-    mapping(uint256 tokenId => uint256 claimable) public claimable;
-    mapping(uint256 tokenId => uint256 supply) public totalSupply;
-
-    struct TokenIdData {
-        PoolKey poolKey;
-        int24 tickLower;
-        bool zeroForOne;
-    }
-
-    constructor(IPoolManager _manager) BaseHook(_manager) ERC1155() { }
+    constructor(IPoolManager _manager) BaseHook(_manager) { }
 
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
@@ -119,21 +109,28 @@ contract AdvancedOrders is BaseHook, ERC1155 {
         orders[orderId] = Order(msg.sender, orderType, amountIn, _triggerTick, OrderStatus.OPEN, zeroForOne);
         int24 tick = getTickLower(tickLower, _poolKey.tickSpacing);
         orderPositions[tick][zeroForOne].push(orders[orderId]);
+        userOrders[msg.sender].push(orders[orderId]);
         orderCount++;
-
-        // Mint receipt token
-        uint256 tokenId = getTokenId(_poolKey, tick, zeroForOne);
-        if (!tokenIdExists[tokenId]) {
-            tokenIdExists[tokenId] = true;
-            tokenIdIndex[tokenId] = TokenIdData({ poolKey: _poolKey, tickLower: tick, zeroForOne: zeroForOne });
-        }
-        _mint(msg.sender, tokenId, amountIn, "");
-        totalSupply[tokenId] += amountIn;
 
         // Transfer token0 to this contract
         address token = zeroForOne ? Currency.unwrap(_poolKey.currency0) : Currency.unwrap(_poolKey.currency1);
         IERC20(token).transferFrom(msg.sender, address(this), amountIn);
         emit OrderPlaced(orderId, msg.sender, orderType, amountIn, _triggerTick);
+    }
+
+    function cancelOrder(bytes32 orderId) external {
+        Order storage order = orders[orderId];
+        require(order.user == msg.sender, "Only the order creator can cancel the order");
+        require(order.status == OrderStatus.OPEN, "Order can only be canceled if it is open");
+
+        // Update order status to canceled
+        order.status = OrderStatus.CANCELED;
+
+        // Transfer the tokens back to the user
+        address token = order.zeroForOne ? Currency.unwrap(poolKey.currency0) : Currency.unwrap(poolKey.currency1);
+        IERC20(token).transfer(order.user, order.amountIn);
+
+        emit OrderCanceled(orderId, msg.sender, order.orderType);
     }
 
     function afterSwap(
@@ -169,10 +166,10 @@ contract AdvancedOrders is BaseHook, ERC1155 {
                 }
             }
         }
-        return (AdvancedOrders.afterSwap.selector, tick);
+        return (AdvancedOrders.afterSwap.selector, 0);
     }
 
-    function settleOrder(bytes32 orderId, bytes calldata _extraData) external {
+    function settleOrder(bytes32 orderId, bytes calldata _extraData) external { // TODO: add modifier
         Order storage order = orders[orderId];
 
         // TODO: Add check to see if the order can be settled based on current tick and order type
@@ -185,44 +182,35 @@ contract AdvancedOrders is BaseHook, ERC1155 {
             abi.encodeWithSignature("settleCallback(address,address,bytes)", tokenIn, tokenOut, _extraData)
         );
         require(success, "Settle callback failed");
-        // TODO: Validate fullfilment?
+        // TODO: Validate fullfilment? (checkOrder fn based on the tick)
 
         order.status = OrderStatus.EXECUTED;
         IERC20(tokenOut).transfer(order.user, IERC20(tokenOut).balanceOf(address(this)));
     }
 
+    /**
+     * @dev Checks if an order should be executed based on the current price.
+     * @param order The order to check.
+     * @return True if the order should be executed, false otherwise.
+     */
+     function shouldExecuteOrder(Order storage order, int24 currentTick) internal view returns (bool) {
+        if (order.orderType == OrderType.STOP_LOSS && currentTick <= order.triggerTick) {
+            return true;
+        } else if (order.orderType == OrderType.BUY_STOP && currentTick >= order.triggerTick) {
+            return true;
+        } else if (order.orderType == OrderType.BUY_LIMIT && currentTick <= order.triggerTick) {
+            return true;
+        } else if (order.orderType == OrderType.TAKE_PROFIT && currentTick >= order.triggerTick) {
+            return true;
+        }
+        return false;
+    }
+
+    // -- Util functions -- //
     function getTick(PoolId poolId) private view returns (int24 tick) {
         (, tick,,) = poolManager.getSlot0(poolId);
     }
 
-    // -- 1155 -- //
-    function uri(uint256) public pure override returns (string memory) {
-        return "";
-    }
-
-    function getTokenId(PoolKey calldata _poolKey, int24 tickLower, bool zeroForOne) public pure returns (uint256) {
-        return uint256(keccak256(abi.encodePacked(_poolKey.toId(), tickLower, zeroForOne)));
-    }
-
-    function redeem(uint256 tokenId, uint256 amountIn, address destination) external {
-        require(claimable[tokenId] > 0, "StopLoss: no claimable amount");
-        uint256 receiptBalance = balanceOf[msg.sender][tokenId];
-        require(amountIn <= receiptBalance, "StopLoss: not enough tokens to redeem");
-
-        TokenIdData memory data = tokenIdIndex[tokenId];
-        address token =
-            data.zeroForOne ? Currency.unwrap(data.poolKey.currency1) : Currency.unwrap(data.poolKey.currency0);
-
-        uint256 amountOut = amountIn.mulDivDown(claimable[tokenId], totalSupply[tokenId]);
-        claimable[tokenId] -= amountOut;
-        _burn(msg.sender, tokenId, amountIn);
-        totalSupply[tokenId] -= amountIn;
-
-        IERC20(token).transfer(destination, amountOut);
-    }
-    // ---------- //
-
-    // -- Util functions -- //
     function setTickLowerLast(PoolId poolId, int24 tickLower) private {
         tickLowerLasts[poolId] = tickLower;
     }
