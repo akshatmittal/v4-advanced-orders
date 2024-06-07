@@ -61,8 +61,7 @@ contract AdvancedOrders is BaseHook {
     event OrderExecuted(
         bytes32 indexed orderId, address indexed user, OrderType orderType, uint256 amountIn, int24 triggerPrice
     );
-    event OrderCanceled(
-        bytes32 indexed orderId, address indexed user, OrderType orderType);
+    event OrderCanceled(bytes32 indexed orderId, address indexed user, OrderType orderType);
 
     event OrdersProcessed(bytes32[] orderIds);
 
@@ -89,8 +88,8 @@ contract AdvancedOrders is BaseHook {
 
     function afterInitialize(address, PoolKey calldata key, uint160, int24 tick, bytes calldata)
         external
-        poolManagerOnly
         override
+        poolManagerOnly
         returns (bytes4)
     {
         poolKey = key;
@@ -110,15 +109,14 @@ contract AdvancedOrders is BaseHook {
 
         orderId = keccak256(abi.encodePacked(orderCount, msg.sender, block.timestamp));
         bool zeroForOne = (orderType == OrderType.BUY_STOP) || (orderType == OrderType.STOP_LOSS);
-        orders[orderId] = Order({ 
+        orders[orderId] = Order({
             id: orderId,
-            user: msg.sender, 
-            orderType: orderType, 
-            amountIn: amountIn, 
-            triggerTick: 
-            _triggerTick, 
-            status: OrderStatus.OPEN, 
-            zeroForOne: zeroForOne 
+            user: msg.sender,
+            orderType: orderType,
+            amountIn: amountIn,
+            triggerTick: _triggerTick,
+            status: OrderStatus.OPEN,
+            zeroForOne: zeroForOne
         });
         int24 tick = getTickLower(tickLower, _poolKey.tickSpacing);
         orderPositions[tick][zeroForOne].push(orders[orderId]);
@@ -169,14 +167,16 @@ contract AdvancedOrders is BaseHook {
         if (prevTick < currentTick) {
             for (; tick < currentTick;) {
                 validOrders = orderPositions[tick][orderZeroForOne];
-                
+
                 bytes32[] memory orderIds = new bytes32[](validOrders.length);
                 uint256 index = 0;
                 for (uint256 i = 0; i < validOrders.length; i++) {
                     orderIds[index] = validOrders[i].id;
                     index++;
                 }
-                emit OrdersProcessed(orderIds);
+                if (orderIds.length > 0) {
+                    emit OrdersProcessed(orderIds);
+                }
                 unchecked {
                     tick += key.tickSpacing;
                 }
@@ -190,7 +190,9 @@ contract AdvancedOrders is BaseHook {
                     orderIds[index] = validOrders[i].id;
                     index++;
                 }
-                emit OrdersProcessed(orderIds);
+                if (orderIds.length > 0) {
+                    emit OrdersProcessed(orderIds);
+                }
                 unchecked {
                     tick -= key.tickSpacing;
                 }
@@ -199,27 +201,32 @@ contract AdvancedOrders is BaseHook {
         return (AdvancedOrders.afterSwap.selector, 0);
     }
 
-    function settleOrder(bytes32 orderId, bytes calldata _extraData) external { // TODO: add modifier
+    function settleOrder(bytes32 orderId, bytes calldata _extraData) external {
+        // TODO: add modifier
         Order storage order = orders[orderId];
         int24 currentTick = getTick(poolKey.toId());
 
-        if(shouldExecuteOrder(order, currentTick)) {
-            address tokenIn = order.zeroForOne ? Currency.unwrap(poolKey.currency1) : Currency.unwrap(poolKey.currency0);
-            address tokenOut = order.zeroForOne ? Currency.unwrap(poolKey.currency0) : Currency.unwrap(poolKey.currency1);
-            IERC20(tokenIn).transfer(msg.sender, order.amountIn);
-
-            (bool success,) = msg.sender.call(
-                abi.encodeWithSignature("settleCallback(address,address,bytes)", tokenIn, tokenOut, _extraData)
-            );
-            require(success, "Settle callback failed");
-            // TODO: Validate fullfilment? (checkOrder fn based on the tick)
-
-            order.status = OrderStatus.EXECUTED;
-            IERC20(tokenOut).transfer(order.user, IERC20(tokenOut).balanceOf(address(this)));
+        if (!shouldExecuteOrder(order, currentTick)) {
+            revert("order can not be filled");
         }
+
+        address tokenIn = !order.zeroForOne ? Currency.unwrap(poolKey.currency1) : Currency.unwrap(poolKey.currency0);
+        address tokenOut = !order.zeroForOne ? Currency.unwrap(poolKey.currency0) : Currency.unwrap(poolKey.currency1);
+        IERC20(tokenIn).transfer(msg.sender, order.amountIn);
+
+        (bool success,) = msg.sender.call(
+            abi.encodeWithSignature("settleCallback(address,address,bytes)", tokenIn, tokenOut, _extraData)
+        );
+        require(success, "Settle callback failed");
+        // TODO: Validate fullfilment? (checkOrder fn based on the tick)
+        // NOTE: The current flow involes the settler to transfer tokens directly to user,
+        //       this can be changed to a more secure by making the hook take that action
+
+        order.status = OrderStatus.EXECUTED;
+        IERC20(tokenOut).transfer(order.user, IERC20(tokenOut).balanceOf(address(this)));
     }
 
-     function shouldExecuteOrder(Order storage order, int24 currentTick) internal view returns (bool) {
+    function shouldExecuteOrder(Order storage order, int24 currentTick) internal view returns (bool) {
         if (order.orderType == OrderType.STOP_LOSS && currentTick <= order.triggerTick) {
             return true;
         } else if (order.orderType == OrderType.BUY_STOP && currentTick >= order.triggerTick) {

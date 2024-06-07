@@ -10,7 +10,7 @@ contract OrderSettler {
         bytes callData;
     }
 
-    function initiateSettle(address _poolHook, uint256 _orderId, Call[] calldata calls) external {
+    function initiateSettle(address _poolHook, bytes32 _orderId, Call[] calldata calls) external {
         (bool success,) =
             _poolHook.call(abi.encodeWithSignature("settleOrder(bytes32,bytes)", _orderId, abi.encode(calls)));
         require(success);
@@ -45,8 +45,5 @@ contract OrderSettler {
                 ++i;
             }
         }
-
-        // Send tokens back to the hook.
-        IERC20(tokenOut).transfer(msg.sender, IERC20(tokenOut).balanceOf(address(this)));
     }
 }
